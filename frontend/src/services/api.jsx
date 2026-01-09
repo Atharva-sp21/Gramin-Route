@@ -1,6 +1,6 @@
 import { db } from '../firebase/firebaseConfig';
-import { 
-  collection, getDocs, doc, updateDoc, addDoc, query, where, writeBatch, deleteDoc 
+import {
+  collection, getDocs, doc, updateDoc, addDoc, query, where, writeBatch, deleteDoc
 } from 'firebase/firestore';
 
 // ==========================================
@@ -125,14 +125,14 @@ export const seedDatabase = async () => {
 
   // 1. DELETE OLD DATA (Cleanup Step)
   try {
-      const usersSnap = await getDocs(collection(db, "users"));
-      usersSnap.forEach(async (doc) => await deleteDoc(doc.ref));
-      
-      const ordersSnap = await getDocs(collection(db, "orders"));
-      ordersSnap.forEach(async (doc) => await deleteDoc(doc.ref));
-      console.log("🗑️ Old Data Cleared.");
+    const usersSnap = await getDocs(collection(db, "users"));
+    usersSnap.forEach(async (doc) => await deleteDoc(doc.ref));
+
+    const ordersSnap = await getDocs(collection(db, "orders"));
+    ordersSnap.forEach(async (doc) => await deleteDoc(doc.ref));
+    console.log("🗑️ Old Data Cleared.");
   } catch (e) {
-      console.log("⚠️ Cleanup skipped (first run or permission issue). Continuing...");
+    console.log("⚠️ Cleanup skipped (first run or permission issue). Continuing...");
   }
 
   // 2. BATCH WRITE NEW DATA
@@ -141,13 +141,13 @@ export const seedDatabase = async () => {
   // A. Create Distributor (D001) in Jangaon
   const d001Ref = doc(collection(db, "users"), "user_D001");
   batch.set(d001Ref, {
-    id: 'D001', 
-    type: 'distributor', 
-    name: 'GraminRoute Hub', 
-    location: 'Jangaon District', 
+    id: 'D001',
+    type: 'distributor',
+    name: 'GraminRoute Hub',
+    location: 'Jangaon District',
     lat: 17.7200, // Center of Jangaon
     lon: 79.1600,
-    password: 'dist123' 
+    password: 'dist123'
   });
 
   // B. Create 100 Retailers & Orders
@@ -155,52 +155,52 @@ export const seedDatabase = async () => {
     // 1. Create Retailer User Doc
     const userRef = doc(collection(db, "users"), `user_${retailer.id}`);
     batch.set(userRef, {
-        id: retailer.id,
-        type: 'retailer',
-        name: retailer.name,
-        location: retailer.location,
-        lat: retailer.lat,
-        lon: retailer.lon,
-        stock: retailer.stock,
-        password: retailer.id === 'R001' ? 'sharma123' : 'pass' 
+      id: retailer.id,
+      type: 'retailer',
+      name: retailer.name,
+      location: retailer.location,
+      lat: retailer.lat,
+      lon: retailer.lon,
+      stock: retailer.stock,
+      password: retailer.id === 'R001' ? 'sharma123' : 'pass'
     });
 
     // 2. If R001 (Our Hero), Create History
     if (retailer.id === 'R001') {
-        // Create Inventory for AI Recommendations
-        CATALOG.forEach(product => {
-            const invRef = doc(collection(db, "inventory"));
-            batch.set(invRef, {
-                ...product,
-                retailer_id: 'R001',
-                current_stock: Math.floor(Math.random() * 20),
-                last_updated: new Date().toISOString().split('T')[0]
-            });
+      // Create Inventory for AI Recommendations
+      CATALOG.forEach(product => {
+        const invRef = doc(collection(db, "inventory"));
+        batch.set(invRef, {
+          ...product,
+          retailer_id: 'R001',
+          current_stock: Math.floor(Math.random() * 20),
+          last_updated: new Date().toISOString().split('T')[0]
         });
-    } 
+      });
+    }
     // 3. For R002-R100, Create Pending Orders (Pooling Data)
     else {
-        // 50% chance to have a pending order
-        if (Math.random() > 0.5) {
-            const product = CATALOG[Math.floor(Math.random() * CATALOG.length)];
-            const qty = Math.floor(Math.random() * 10) + 10; 
-            const orderRef = doc(collection(db, "orders"));
-            batch.set(orderRef, {
-                retailer_id: retailer.id,
-                retailer_name: retailer.name,
-                retailer_location: retailer.location,
-                retailer_lat: retailer.lat, // KEY for Python Pooling
-                retailer_lon: retailer.lon,
-                product_id: product.id,
-                product_name: product.name,
-                quantity: qty,
-                unit_price: product.unit_price,
-                total_amount: qty * product.unit_price,
-                status: 'pending',
-                date: new Date().toISOString().split('T')[0],
-                source: 'Auto-Restock'
-            });
-        }
+      // 50% chance to have a pending order
+      if (Math.random() > 0.5) {
+        const product = CATALOG[Math.floor(Math.random() * CATALOG.length)];
+        const qty = Math.floor(Math.random() * 10) + 10;
+        const orderRef = doc(collection(db, "orders"));
+        batch.set(orderRef, {
+          retailer_id: retailer.id,
+          retailer_name: retailer.name,
+          retailer_location: retailer.location,
+          retailer_lat: retailer.lat, // KEY for Python Pooling
+          retailer_lon: retailer.lon,
+          product_id: product.id,
+          product_name: product.name,
+          quantity: qty,
+          unit_price: product.unit_price,
+          total_amount: qty * product.unit_price,
+          status: 'pending',
+          date: new Date().toISOString().split('T')[0],
+          source: 'Auto-Restock'
+        });
+      }
     }
   });
 
@@ -224,9 +224,9 @@ export const loginUser = async (userId, password, type) => {
 };
 
 export const fetchAllRetailers = async () => {
-    const q = query(collection(db, "users"), where("type", "==", "retailer"));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => doc.data());
+  const q = query(collection(db, "users"), where("type", "==", "retailer"));
+  const snapshot = await getDocs(q);
+  return snapshot.docs.map(doc => doc.data());
 };
 
 // --- Inventory ---
@@ -242,7 +242,7 @@ export const fetchOrders = async (retailerId = null) => {
   if (retailerId) {
     q = query(collection(db, "orders"), where("retailer_id", "==", retailerId));
   } else {
-    q = query(collection(db, "orders")); 
+    q = query(collection(db, "orders"));
   }
   const snapshot = await getDocs(q);
   return snapshot.docs.map(doc => ({ docId: doc.id, ...doc.data() }));
@@ -258,19 +258,37 @@ export const updateOrderStatus = async (docId, status) => {
 };
 
 // --- AI BRAIN INTEGRATION ---
+// In src/api/api.js
+// --- AI BRAIN INTEGRATION ---
 export const getAIRecommendation = async (retailerData) => {
+  // 1. Prepare the payload safely
+  // We check both .stock and .current_stock to handle different input shapes
+  const stockValue = retailerData.stock !== undefined ? retailerData.stock : retailerData.current_stock;
+  
+  const payload = {
+    shop_id: retailerData.id || retailerData.shop_id, // Safety check
+    lat: parseFloat(retailerData.lat), // Force number
+    lon: parseFloat(retailerData.lon), // Force number
+    current_stock: parseInt(stockValue), // Python expects 'current_stock' as an Integer
+    is_festival: false 
+  };
+
+  console.log("📤 Sending to AI Brain:", payload); // Debug log to check data
+
   try {
     const response = await fetch(`${PYTHON_API_URL}/recommend_distributor`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        shop_id: retailerData.id,
-        lat: retailerData.lat,
-        lon: retailerData.lon,
-        current_stock: retailerData.current_stock,
-        is_festival: false 
-      })
+      body: JSON.stringify(payload)
     });
+    
+    // 2. Check for 422 or other errors explicitly
+    if (!response.ok) {
+        const errorData = await response.json();
+        console.error("⚠️ AI Brain Error:", errorData);
+        return null;
+    }
+
     return await response.json();
   } catch (error) {
     console.error("AI Brain Offline:", error);
@@ -280,7 +298,7 @@ export const getAIRecommendation = async (retailerData) => {
 
 export const getOptimizedPools = async (orders) => {
   const pythonPayload = orders.map(o => ({
-    shop_id: o.retailer_id, 
+    shop_id: o.retailer_id,
     lat: o.retailer_lat || 17.72, // Default to Jangaon if missing
     lon: o.retailer_lon || 79.16,
     qty_needed: o.quantity

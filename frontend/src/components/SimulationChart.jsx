@@ -1,148 +1,180 @@
-import React, { useState, useEffect } from 'react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceArea } from 'recharts';
-import { TrendingUp, Zap } from 'lucide-react';
+import React, { useMemo } from 'react';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, ComposedChart
+} from 'recharts';
+import { TrendingUp, ArrowUpRight } from 'lucide-react';
 
 const SimulationChart = () => {
-  const [data, setData] = useState([]);
-  const [metrics, setMetrics] = useState({ standard: 0, ai: 0, increase: 0 });
+  // We use useMemo so the simulation runs once and stays stable (doesn't jitter on re-renders)
+  const simulationData = useMemo(() => {
+    const days = 60;
+    const initialCash = 50000;
+    const marginPerUnit = 20;
+    
+    // COSTS
+    const baseCost = 80;      // Traditional Price
+    const bulkCost = 75;      // GraminRoute Pooled Price
+    const deliveryFee = 100;
+    const shelfLifeLimit = 10;
 
-  // --- SIMULATION LOGIC (Ported from Python Block 6) ---
-  useEffect(() => {
-    const runSimulation = () => {
-      const days = 60;
-      const history = [];
+    // 1. TRADITIONAL STATE
+    let stdCash = initialCash;
+    let stdStock = 50;
+    let stdBatches = [{ qty: 50, life: shelfLifeLimit }];
+    
+    // 2. GRAMINROUTE STATE
+    let aiCash = initialCash;
+    let aiStock = 50;
+    let aiBatches = [{ qty: 50, life: shelfLifeLimit }];
+
+    const data = [];
+
+    // HELPER: FIFO SALES LOGIC
+    const processDay = (batches, demand) => {
+      let sales = 0;
+      let remainingDemand = demand;
       
-      // Setup
-      let std_cash = 50000;
-      let std_stock = 50;
-      let ai_cash = 50000;
-      let ai_stock = 50;
-
-      // Prices
-      const base_cost = 80;
-      const bulk_cost = 75; // Discount!
-      const delivery = 100;
-      const shared_delivery = 25; // Pooled!
-      const margin = 20;
-
-      for (let day = 1; day <= days; day++) {
-        // 1. Market Conditions
-        const isFestival = day >= 20 && day <= 25;
-        let demand = Math.floor(Math.random() * 6) + 2; // 2 to 8
-        if (isFestival) demand += 10; // Spike!
-
-        // --- TRADITIONAL LOGIC ---
-        if (std_stock < 20) {
-            const qty = 40;
-            std_cash -= (qty * base_cost) + delivery; // Pays full price
-            std_stock += qty;
+      // Sell oldest stock first
+      batches.forEach(batch => {
+        if (remainingDemand > 0 && batch.qty > 0) {
+          const sold = Math.min(batch.qty, remainingDemand);
+          batch.qty -= sold;
+          remainingDemand -= sold;
+          sales += sold;
         }
-
-        // --- GRAMINROUTE AI LOGIC ---
-        const target = isFestival ? 50 : 15; // AI predicts demand
-        if (ai_stock < target) {
-            const needed = target - ai_stock;
-            // Pooling Check: High volume or lucky neighbor match
-            const isPooled = needed >= 40 || Math.random() > 0.3; 
-            
-            const cost = isPooled ? bulk_cost : base_cost;
-            const del_fee = isPooled ? shared_delivery : delivery;
-            
-            ai_cash -= (needed * cost) + del_fee;
-            ai_stock += needed;
-        }
-
-        // --- SALES ---
-        // Traditional
-        const std_sold = Math.min(std_stock, demand);
-        std_stock -= std_sold;
-        std_cash += std_sold * (base_cost + margin);
-
-        // AI
-        const ai_sold = Math.min(ai_stock, demand);
-        ai_stock -= ai_sold;
-        ai_cash += ai_sold * (base_cost + margin);
-
-        // Record Net Wealth (Cash + Asset Value)
-        history.push({
-            day: `Day ${day}`,
-            Traditional: Math.round(std_cash + (std_stock * base_cost)),
-            GraminRoute: Math.round(ai_cash + (ai_stock * base_cost)),
-            isFestival
-        });
-      }
-
-      setData(history);
-      const final = history[history.length - 1];
-      setMetrics({
-          standard: final.Traditional,
-          ai: final.GraminRoute,
-          increase: final.GraminRoute - final.Traditional
       });
+
+      // Rotting Logic (Age decreases)
+      const newBatches = batches
+        .map(b => ({ ...b, life: b.life - 1 }))
+        .filter(b => b.life > 0 && b.qty > 0);
+
+      const totalStock = newBatches.reduce((sum, b) => sum + b.qty, 0);
+      return { newBatches, sales, totalStock };
     };
 
-    runSimulation();
-  }, []);
+    // --- DAY LOOP ---
+    for (let day = 0; day < days; day++) {
+      // Demand Simulation
+      const isFestival = (day > 20 && day < 25);
+      let dailyDemand = Math.floor(Math.random() * (8 - 2) + 2); // Random between 2 and 8
+      if (isFestival) dailyDemand += 10;
+
+      // --- TRADITIONAL LOGIC (Reactive) ---
+      if (stdStock < 20) {
+        const orderQty = 40;
+        const cost = (orderQty * baseCost) + deliveryFee; // Full Delivery Fee
+        stdCash -= cost;
+        stdBatches.push({ qty: orderQty, life: shelfLifeLimit });
+        stdStock += orderQty;
+      }
+
+      // --- GRAMINROUTE LOGIC (Predictive + Pooling) ---
+      const target = isFestival ? 50 : 15; // AI Prediction
+      
+      if (aiStock < target) {
+        let needed = target - aiStock;
+        if (!isFestival) needed = Math.min(needed, 10); // Anti-Burn Rule
+
+        // POOLING PROBABILITY (70% chance neighbors exist)
+        const neighborParticipation = Math.random() > 0.3;
+        
+        let unitCost = baseCost;
+        let delivery = deliveryFee;
+
+        if (neighborParticipation || needed >= 50) {
+          unitCost = bulkCost;       // Cheaper Unit Price
+          delivery = deliveryFee / 4; // Split Delivery Fee
+        }
+
+        const cost = (needed * unitCost) + delivery;
+        aiCash -= cost;
+        aiBatches.push({ qty: needed, life: shelfLifeLimit });
+        aiStock += needed;
+      }
+
+      // PROCESS SALES
+      const stdRes = processDay(stdBatches, dailyDemand);
+      stdBatches = stdRes.newBatches;
+      stdStock = stdRes.totalStock;
+      stdCash += (stdRes.sales * (baseCost + marginPerUnit));
+
+      const aiRes = processDay(aiBatches, dailyDemand);
+      aiBatches = aiRes.newBatches;
+      aiStock = aiRes.totalStock;
+      aiCash += (aiRes.sales * (baseCost + marginPerUnit));
+
+      // Record Data for Chart (Net Wealth = Cash + Inventory Value)
+      data.push({
+        day: `Day ${day + 1}`,
+        Traditional: Math.round(stdCash + (stdStock * baseCost)),
+        GraminRoute: Math.round(aiCash + (aiStock * baseCost)),
+      });
+    }
+
+    return data;
+  }, []); // Empty dependency array = runs once on mount
+
+  // Calculate Final Stats
+  const finalTrad = simulationData[simulationData.length - 1].Traditional;
+  const finalAI = simulationData[simulationData.length - 1].GraminRoute;
+  const profitIncrease = finalAI - finalTrad;
 
   return (
-    <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-100">
-      <div className="flex justify-between items-start mb-6">
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+      <div className="flex justify-between items-end mb-6">
         <div>
-            <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-                <TrendingUp className="text-green-600"/> 
-                Projected Savings Simulation
-            </h2>
-            <p className="text-sm text-gray-500">60-Day Comparison: Manual vs. AI Pooling</p>
+          <h3 className="font-bold text-lg text-gray-700 flex items-center gap-2">
+            <TrendingUp size={20} className="text-blue-600"/> 
+            Projected Wealth Growth (60 Days)
+          </h3>
+          <p className="text-sm text-gray-500">Comparison: Standard vs. GraminRoute Pooling Model</p>
         </div>
         <div className="text-right">
-            <p className="text-sm text-gray-500">Net Profit Increase</p>
-            <p className="text-2xl font-bold text-green-600">+₹{metrics.increase.toLocaleString()}</p>
+          <p className="text-xs font-bold text-gray-400 uppercase">Net Profit Increase</p>
+          <p className="text-3xl font-extrabold text-green-600 flex items-center gap-1">
+            +₹{profitIncrease.toLocaleString()} <ArrowUpRight size={28}/>
+          </p>
         </div>
       </div>
 
       <div className="h-[300px] w-full">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={data}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb"/>
+          <ComposedChart data={simulationData}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f0f0f0" />
             <XAxis dataKey="day" hide />
-            <YAxis domain={['auto', 'auto']} tickFormatter={(v) => `₹${v/1000}k`} />
+            <YAxis domain={['auto', 'auto']} fontSize={12} tickFormatter={(val) => `₹${val/1000}k`} />
             <Tooltip 
-                formatter={(value) => `₹${value.toLocaleString()}`}
-                contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+              formatter={(val) => `₹${val.toLocaleString()}`}
             />
             <Legend />
-            
-            {/* Festival Highlight Zone */}
-            <ReferenceArea x1="Day 20" x2="Day 25" fill="#FFEDD5" fillOpacity={0.5} />
-            
+            {/* Traditional Line */}
             <Line 
-                type="monotone" 
-                dataKey="Traditional" 
-                stroke="#9CA3AF" 
-                strokeWidth={2} 
-                dot={false}
-                strokeDasharray="5 5"
+              type="monotone" 
+              dataKey="Traditional" 
+              stroke="#9ca3af" 
+              strokeWidth={2} 
+              dot={false} 
+              strokeDasharray="5 5" 
             />
-            <Line 
-                type="monotone" 
-                dataKey="GraminRoute" 
-                stroke="#16A34A" 
-                strokeWidth={3} 
-                dot={false} 
+            {/* GraminRoute Area */}
+            <Area 
+              type="monotone" 
+              dataKey="GraminRoute" 
+              stroke="#059669" 
+              strokeWidth={3} 
+              fill="url(#colorGradient)" 
+              fillOpacity={0.1}
             />
-          </LineChart>
+            <defs>
+              <linearGradient id="colorGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor="#059669" stopOpacity={0.2}/>
+                <stop offset="95%" stopColor="#059669" stopOpacity={0}/>
+              </linearGradient>
+            </defs>
+          </ComposedChart>
         </ResponsiveContainer>
-      </div>
-
-      <div className="mt-4 flex gap-4 text-xs text-gray-600 bg-gray-50 p-3 rounded-lg">
-          <div className="flex items-center gap-2">
-              <span className="w-3 h-3 bg-orange-100 border border-orange-200 block"></span>
-              <span><strong>Festive Period (Days 20-25):</strong> AI stocks up early, preventing stockouts.</span>
-          </div>
-          <div className="flex items-center gap-2">
-              <Zap size={14} className="text-green-600"/>
-              <span><strong>Pooling Effect:</strong> Bulk orders save ~₹75 per delivery.</span>
-          </div>
       </div>
     </div>
   );

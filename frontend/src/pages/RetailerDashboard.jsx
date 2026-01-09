@@ -1,209 +1,304 @@
 import React, { useState, useEffect } from 'react';
-import { ShoppingCart, Package, TrendingUp, LogOut, Upload, CheckCircle, Clock, X, Check } from 'lucide-react';
-import { fetchInventory, fetchOrders, createOrder } from '../services/api';
-import { CATALOG } from '../utils/helpers';
-import ProductCard from './ProductCard';
+import {
+    ShoppingCart, Package, TrendingUp, LogOut, CheckCircle,
+    Truck, Home, History, Plus, Zap, Users, X, Check
+} from 'lucide-react';
+import { fetchInventory, fetchOrders, createOrder, getAIRecommendation } from '../services/api';
 import SimulationChart from '../components/SimulationChart';
 
+// Hardcoded Catalog
+const CATALOG = [
+    { id: 'P001', name: 'Rice (50kg)', category: 'Grains', unit_price: 2500, reorder_level: 10 },
+    { id: 'P002', name: 'Wheat Flour (40kg)', category: 'Grains', unit_price: 1800, reorder_level: 15 },
+    { id: 'P003', name: 'Sugar (50kg)', category: 'Sweeteners', unit_price: 2200, reorder_level: 12 },
+    { id: 'P004', name: 'Cooking Oil (15L)', category: 'Oils', unit_price: 1500, reorder_level: 20 },
+    { id: 'P005', name: 'Pulses Mix (25kg)', category: 'Pulses', unit_price: 3000, reorder_level: 8 },
+];
+
 const RetailerDashboard = ({ user, onLogout }) => {
-  const [activeTab, setActiveTab] = useState('home');
-  const [stockData, setStockData] = useState([]);
-  const [orders, setOrders] = useState([]);
-  const [aiRecommendations, setAiRecommendations] = useState([]);
-  const [cart, setCart] = useState([]);
-  const [showCatalog, setShowCatalog] = useState(false);
+    const [activeTab, setActiveTab] = useState('home');
+    const [stockData, setStockData] = useState([]);
+    const [orders, setOrders] = useState([]);
 
-  // Load Data
-  useEffect(() => {
+    // AI STATE
+    const [aiInsight, setAiInsight] = useState(null);
+    const [pooledOffer, setPooledOffer] = useState(null); // New State for "The Deal"
+
+    const [cartQty, setCartQty] = useState({});
+    const [loading, setLoading] = useState(false);
+
+    // Load Data
     const loadData = async () => {
-      const stock = await fetchInventory(user.id);
-      const orderList = await fetchOrders(user.id);
-      
-      setStockData(stock);
-      // Sort orders by date descending (simple client-side sort)
-      setOrders(orderList.sort((a,b) => new Date(b.date) - new Date(a.date)));
+        const stock = await fetchInventory(user.id);
+        const orderList = await fetchOrders(user.id);
+        setStockData(stock);
+        setOrders(orderList);
 
-      // Generate AI Recommendations based on fetched stock
-      const lowStock = stock.filter(item => item.current_stock < item.reorder_level);
-      setAiRecommendations(lowStock.map(item => ({
-        product_id: item.id,
-        product_name: item.name,
-        current: item.current_stock,
-        recommended: Math.max(item.reorder_level + 5, Math.ceil(item.reorder_level * 1.5)),
-        urgency: item.current_stock < item.reorder_level * 0.5 ? 'HIGH' : 'MEDIUM',
-        unit_price: item.unit_price,
-        estimated_cost: Math.max(item.reorder_level + 5, Math.ceil(item.reorder_level * 1.5)) * item.unit_price
-      })));
+        // --- AI LOGIC: FIND POOL OPPORTUNITY ---
+        if (!aiInsight && stock.length > 0) {
+            // Find critical item
+            const lowStockItem = stock.find(i => i.current_stock < 20) || stock[0];
+
+            if (lowStockItem) {
+                // In RetailerDashboard.js
+                const aiResponse = await getAIRecommendation({
+                    id: user.id,
+                    lat: user.lat,
+                    lon: user.lon,
+                    stock: lowStockItem.current_stock, // We pass it as 'stock'
+                    is_festival: false
+                });
+
+                if (aiResponse) {
+                    setAiInsight({ ...aiResponse, item: lowStockItem });
+
+                    // --- GENERATE POOLING OFFER (The "Model" Logic) ---
+                    // If AI recommends this, we simulate finding neighbors to pool with
+                    const standardPrice = lowStockItem.unit_price;
+                    const pooledPrice = Math.floor(standardPrice * 0.85); // 15% Discount
+
+                    setPooledOffer({
+                        item: lowStockItem,
+                        neighbors: 3, // "3 other shops in Jangaon are ordering this"
+                        standard_price: standardPrice,
+                        pooled_price: pooledPrice,
+                        savings_per_unit: standardPrice - pooledPrice,
+                        distributor: aiResponse.top_pick
+                    });
+                }
+            }
+        }
     };
-    loadData();
-  }, [user.id]);
 
-  const placeOrder = async (items, source) => {
-    for (const item of items) {
-        const orderData = {
+    useEffect(() => { loadData(); }, [user]);
+
+    // --- ACCEPT / DENY LOGIC ---
+
+    const handleAcceptPool = async () => {
+        if (!pooledOffer) return;
+        const qty = 20; // AI suggested batch size
+        setLoading(true);
+
+        const orderPayload = {
             retailer_id: user.id,
             retailer_name: user.name,
             retailer_location: user.location,
-            product_id: item.product_id,
-            product_name: item.product_name,
-            quantity: item.quantity,
-            unit_price: item.unit_price,
-            total_amount: item.total || (item.quantity * item.unit_price),
+            retailer_lat: user.lat,
+            retailer_lon: user.lon,
+            product_id: pooledOffer.item.id,
+            product_name: pooledOffer.item.name,
+            quantity: qty,
+            unit_price: pooledOffer.pooled_price, // <--- SAVING APPLIED HERE
+            total_amount: qty * pooledOffer.pooled_price,
             status: 'pending',
-            paid: 0,
             date: new Date().toISOString().split('T')[0],
-            source: source
+            source: 'Pool-Deal' // Tagged as a pooled order
         };
-        await createOrder(orderData);
-    }
-    // Refresh Data
-    const newOrders = await fetchOrders(user.id);
-    setOrders(newOrders.sort((a,b) => new Date(b.date) - new Date(a.date)));
-    alert("Order Placed Successfully!");
-  };
 
-  const handleAcceptAIOrder = async (rec) => {
-    await placeOrder([{
-        product_id: rec.product_id,
-        product_name: rec.product_name,
-        quantity: rec.recommended,
-        unit_price: rec.unit_price,
-    }], 'AI Suggested');
-    setAiRecommendations(prev => prev.filter(r => r.product_id !== rec.product_id));
-  };
+        try {
+            await createOrder(orderPayload);
+            alert(`🎉 POOL JOINED! You saved ₹${(pooledOffer.savings_per_unit * qty).toLocaleString()}`);
+            setAiInsight(null); // Clear the card
+            setPooledOffer(null);
+            await loadData();
+        } catch (e) {
+            console.error(e);
+        } finally {
+            setLoading(false);
+        }
+    };
 
-  const handlePlaceCartOrder = async () => {
-    await placeOrder(cart, 'Manual Order');
-    setCart([]);
-    setShowCatalog(false);
-    setActiveTab('orders');
-  };
+    const handleDenyPool = () => {
+        if (window.confirm("Reject 15% savings? You will have to pay full delivery fees later.")) {
+            setAiInsight(null);
+            setPooledOffer(null);
+        }
+    };
 
-  // ... (Rendering logic similar to original, keeping it concise) ...
-  // Keeping the layout structure but utilizing the new data sources
-  
-  return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <div className="bg-white shadow px-4 py-4 flex justify-between items-center">
-        <div>
-           <h1 className="text-2xl font-bold text-green-700">{user.name}</h1>
-           <p className="text-sm text-gray-600">{user.location}</p>
-        </div>
-        <div className="flex gap-4">
-            <button onClick={() => setShowCatalog(true)} className="bg-green-600 text-white px-4 py-2 rounded flex items-center gap-2">
-                <ShoppingCart size={20} /> Catalog {cart.length > 0 && `(${cart.length})`}
-            </button>
-            <button onClick={onLogout} className="text-gray-600"><LogOut /></button>
-        </div>
-      </div>
+    // Standard Manual Order
+    const handlePlaceOrder = async (product) => {
+        const qty = cartQty[product.id] || 0;
+        if (qty <= 0) return alert("Enter Qty");
 
-      {/* Tabs */}
-      <div className="bg-white border-t px-4 flex gap-6">
-          {['home', 'stock', 'orders'].map(tab => (
-              <button key={tab} onClick={() => setActiveTab(tab)} 
-                className={`py-4 px-2 border-b-2 font-semibold capitalize ${activeTab === tab ? 'border-green-600 text-green-600' : 'border-transparent'}`}>
-                {tab}
-              </button>
-          ))}
-      </div>
+        const orderPayload = {
+            retailer_id: user.id,
+            retailer_name: user.name,
+            retailer_location: user.location,
+            retailer_lat: user.lat,
+            retailer_lon: user.lon,
+            product_id: product.id,
+            product_name: product.name,
+            quantity: parseInt(qty),
+            unit_price: product.unit_price, // Full Price
+            total_amount: parseInt(qty) * product.unit_price,
+            status: 'pending',
+            date: new Date().toISOString().split('T')[0],
+            source: 'Manual-Web'
+        };
+        await createOrder(orderPayload);
+        alert("Standard Order Placed");
+        await loadData();
+    };
 
-      <div className="max-w-7xl mx-auto p-4 py-8">
-        {activeTab === 'home' && (
-            <div className="space-y-6">
-                {/* Stats Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="bg-white p-6 rounded shadow flex justify-between">
-                        <div><p className="text-gray-600">Total Stock Value</p><p className="text-3xl font-bold">₹{stockData.reduce((s, i) => s + (i.current_stock * i.unit_price), 0).toLocaleString()}</p></div>
-                        <Package className="text-green-600" size={40} />
-                    </div>
-                    {/* Add other stats here... */}
+    return (
+        <div className="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col">
+
+            {/* HEADER */}
+            <div className="bg-white shadow px-6 py-4 flex justify-between items-center sticky top-0 z-50">
+                <div>
+                    <h1 className="text-2xl font-extrabold text-green-700 tracking-tight">GraminRoute</h1>
+                    <p className="text-xs text-gray-500 font-medium">SMART RETAILER NETWORK</p>
                 </div>
+                <div className="flex bg-gray-100 rounded-lg p-1 gap-1">
+                    <button onClick={() => setActiveTab('home')} className={`px-4 py-2 rounded-md text-sm font-semibold flex items-center gap-2 transition ${activeTab === 'home' ? 'bg-white shadow text-green-700' : 'text-gray-500'}`}><Home size={16} /> Home</button>
+                    <button onClick={() => setActiveTab('catalog')} className={`px-4 py-2 rounded-md text-sm font-semibold flex items-center gap-2 transition ${activeTab === 'catalog' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}><ShoppingCart size={16} /> Catalog</button>
+                    <button onClick={() => setActiveTab('history')} className={`px-4 py-2 rounded-md text-sm font-semibold flex items-center gap-2 transition ${activeTab === 'history' ? 'bg-white shadow text-purple-600' : 'text-gray-500'}`}><History size={16} /> Orders</button>
+                </div>
+                <button onClick={onLogout} className="text-gray-400 hover:text-red-500"><LogOut size={16} /></button>
+            </div>
 
-                {/* AI Recommendations */}
-                {aiRecommendations.length > 0 ? (
-                    <div className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl shadow-lg p-6 text-white">
-                        <div className="flex items-center gap-3 mb-4"><TrendingUp /><h2 className="text-2xl font-bold">AI Stock Recommendations</h2></div>
-                        <div className="space-y-3">
-                            {aiRecommendations.map((rec, idx) => (
-                                <div key={idx} className="bg-white/10 backdrop-blur rounded p-4 flex justify-between items-center">
-                                    <div>
-                                        <p className="font-bold">{rec.product_name}</p>
-                                        <p className="text-sm">Rec: {rec.recommended} units | Cost: ₹{rec.estimated_cost}</p>
+            <div className="max-w-6xl mx-auto w-full p-6 space-y-8 flex-grow">
+
+                {/* === TAB 1: HOME (THE "POOL" DASHBOARD) === */}
+                {activeTab === 'home' && (
+                    <>
+                        {/* --- THE DEAL CARD (AI POOL RECOMMENDATION) --- */}
+                        {pooledOffer && aiInsight && (
+                            <div className="bg-white rounded-2xl shadow-xl border border-blue-100 overflow-hidden relative">
+                                {/* Top Banner */}
+                                <div className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white px-6 py-3 flex justify-between items-center">
+                                    <div className="flex items-center gap-2">
+                                        <Zap size={20} className="text-yellow-300" fill="currentColor" />
+                                        <span className="font-bold tracking-wide">SMART POOL DETECTED</span>
                                     </div>
-                                    <div className="flex gap-2">
-                                        <button onClick={() => handleAcceptAIOrder(rec)} className="bg-green-500 p-2 rounded"><Check size={16}/></button>
-                                        <button onClick={() => setAiRecommendations(aiRecommendations.filter(r => r.product_id !== rec.product_id))} className="bg-red-500 p-2 rounded"><X size={16}/></button>
+                                    <div className="bg-white/20 px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1">
+                                        <Users size={12} /> {pooledOffer.neighbors} Neighbors Joining
                                     </div>
                                 </div>
-                            ))}
-                        </div>
-                        <SimulationChart />
-                    </div>
-                    
-                ) : <div className="p-6 bg-green-50 rounded text-center text-green-800"><CheckCircle className="inline mb-2"/> All stock healthy!</div>}
-            </div>
-        )}
 
-        {activeTab === 'stock' && (
-            <div className="bg-white rounded shadow p-6 overflow-x-auto">
-                <table className="w-full text-left">
-                    <thead className="bg-gray-50"><tr><th className="p-3">Product</th><th className="p-3">Stock</th><th className="p-3">Status</th></tr></thead>
-                    <tbody>
-                        {stockData.map(item => (
-                            <tr key={item.docId} className="border-t">
-                                <td className="p-3">{item.name}</td>
-                                <td className="p-3 font-bold">{item.current_stock}</td>
-                                <td className="p-3">{item.current_stock < item.reorder_level ? <span className="text-red-500 font-bold">Low</span> : <span className="text-green-500">OK</span>}</td>
-                            </tr>
+                                <div className="p-6 flex flex-col md:flex-row gap-8 items-center">
+
+                                    {/* Left: The Problem */}
+                                    <div className="flex-1">
+                                        <h2 className="text-2xl font-bold text-gray-800 mb-2">Restock {pooledOffer.item.name}</h2>
+                                        <p className="text-gray-600 mb-4">
+                                            Your stock is low ({aiInsight.stock} units).
+                                            We found a truck passing by Jangaon that is already delivering to 3 other shops.
+                                        </p>
+
+                                        {/* THE COST CUTTING VISUALIZATION */}
+                                        <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                                            <p className="text-xs font-bold text-gray-500 uppercase mb-2">Price Breakdown (Per Unit)</p>
+                                            <div className="flex items-center gap-6">
+                                                <div>
+                                                    <p className="text-sm text-gray-400 line-through">Standard Price</p>
+                                                    <p className="text-lg font-bold text-gray-400">₹{pooledOffer.standard_price}</p>
+                                                </div>
+                                                <div className="text-2xl text-gray-300">→</div>
+                                                <div>
+                                                    <p className="text-sm text-green-600 font-bold">Pool Price</p>
+                                                    <p className="text-2xl font-extrabold text-green-700">₹{pooledOffer.pooled_price}</p>
+                                                </div>
+                                                <div className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-xs font-bold ml-auto">
+                                                    SAVE 15%
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Right: The Decision */}
+                                    <div className="min-w-[280px] flex flex-col gap-3">
+                                        <div className="text-center mb-2">
+                                            <span className="text-sm text-gray-500">Proposed Order: 20 Units</span>
+                                            <div className="text-3xl font-bold text-blue-900 mt-1">
+                                                ₹{(20 * pooledOffer.pooled_price).toLocaleString()}
+                                            </div>
+                                            <div className="text-xs text-green-600 font-bold">
+                                                Total Savings: ₹{(20 * pooledOffer.savings_per_unit).toLocaleString()}
+                                            </div>
+                                        </div>
+
+                                        <button
+                                            onClick={handleAcceptPool}
+                                            disabled={loading}
+                                            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold shadow-lg flex justify-center items-center gap-2 transition transform hover:scale-105"
+                                        >
+                                            <Check size={20} /> Accept & Join Pool
+                                        </button>
+
+                                        <button
+                                            onClick={handleDenyPool}
+                                            className="w-full bg-white border border-gray-200 text-gray-500 py-3 rounded-lg font-semibold hover:bg-gray-50 flex justify-center items-center gap-2 transition"
+                                        >
+                                            <X size={20} /> Deny (Pay Full Price)
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                            <div className="lg:col-span-2">
+                                <h3 className="font-bold text-lg mb-4 text-gray-700">Profit Projection</h3>
+                                <SimulationChart />
+                            </div>
+                            <div>
+                                <h3 className="font-bold text-lg mb-4 text-gray-700">Shop Health</h3>
+                                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 mb-6">
+                                    <p className="text-gray-500 text-xs font-bold uppercase">Total Inventory Value</p>
+                                    <p className="text-3xl font-bold text-gray-800 mt-2">₹{stockData.reduce((s, i) => s + (i.current_stock * i.unit_price), 0).toLocaleString()}</p>
+                                </div>
+                                <div className="bg-blue-50 p-6 rounded-xl border border-blue-100">
+                                    <div className="flex items-start gap-4">
+                                        <div className="bg-blue-200 p-2 rounded-lg text-blue-700"><Truck size={24} /></div>
+                                        <div>
+                                            <h4 className="font-bold text-blue-900">Delivery Status</h4>
+                                            <p className="text-sm text-blue-800 mt-1">Next truck to Jangaon: <span className="font-bold">Tomorrow 10 AM</span></p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </>
+                )}
+
+                {/* === TAB 2 & 3: CATALOG & HISTORY (Simpler view) === */}
+                {activeTab === 'catalog' && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {CATALOG.map((product) => (
+                            <div key={product.id} className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                                <h3 className="font-bold text-lg">{product.name}</h3>
+                                <p className="text-gray-500 text-sm mb-4">₹{product.unit_price} / unit</p>
+                                <div className="flex gap-2">
+                                    <input type="number" placeholder="Qty" className="border p-2 rounded w-20" onChange={(e) => setCartQty({ ...cartQty, [product.id]: e.target.value })} />
+                                    <button onClick={() => handlePlaceOrder(product)} className="bg-gray-900 text-white px-4 py-2 rounded flex-1">Order</button>
+                                </div>
+                            </div>
                         ))}
-                    </tbody>
-                </table>
-            </div>
-        )}
-
-        {activeTab === 'orders' && (
-            <div className="space-y-4">
-                {orders.map(order => (
-                    <div key={order.docId} className="bg-white p-4 rounded shadow flex justify-between">
-                        <div>
-                            <p className="font-bold">{order.product_name}</p>
-                            <p className="text-xs text-gray-500">{order.docId}</p>
-                        </div>
-                        <div className="text-right">
-                            <p className="font-bold">₹{order.total_amount}</p>
-                            <span className={`text-xs px-2 py-1 rounded ${order.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100'}`}>{order.status}</span>
-                        </div>
-                    </div>
-                ))}
-            </div>
-        )}
-      </div>
-
-      {/* Catalog Modal */}
-      {showCatalog && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white w-full max-w-4xl h-[80vh] flex flex-col rounded-xl">
-                <div className="p-4 border-b flex justify-between"><h2 className="text-xl font-bold">Catalog</h2><button onClick={() => setShowCatalog(false)}><X/></button></div>
-                <div className="flex-1 overflow-y-auto p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
-                    {CATALOG.map(p => (
-                        <ProductCard key={p.id} product={p} onAddToCart={(prod, qty) => {
-                            setCart(prev => [...prev, { product_id: prod.id, product_name: prod.name, quantity: qty, unit_price: prod.unit_price, total: prod.unit_price * qty }]);
-                            alert("Added to cart");
-                        }} />
-                    ))}
-                </div>
-                {cart.length > 0 && (
-                    <div className="p-4 border-t bg-gray-50 flex justify-between items-center">
-                        <p className="font-bold">Total: ₹{cart.reduce((a,b)=>a+b.total,0)}</p>
-                        <button onClick={handlePlaceCartOrder} className="bg-green-600 text-white px-6 py-2 rounded">Place Order</button>
                     </div>
                 )}
+
+                {activeTab === 'history' && (
+                    <div className="bg-white rounded-xl shadow-sm p-6">
+                        <h3 className="font-bold text-lg mb-4">Order History</h3>
+                        {orders.map(o => (
+                            <div key={o.docId} className="flex justify-between border-b py-3">
+                                <div>
+                                    <p className="font-bold">{o.product_name} (x{o.quantity})</p>
+                                    <p className="text-xs text-gray-500">{o.date}</p>
+                                </div>
+                                <div className="text-right">
+                                    <p className="font-bold">₹{o.total_amount}</p>
+                                    {o.source === 'Pool-Deal' && <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded font-bold">POOLED SAVINGS</span>}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
             </div>
         </div>
-      )}
-    </div>
-  );
+    );
 };
 
 export default RetailerDashboard;
