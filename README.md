@@ -81,6 +81,9 @@ Neural-Quantum-Vehicle-Routing-Problem/
 └── 📜 demo_video.mp4       # Runthrough of the project
 ```
 ## Video Demo
-Uploading 783db708-30d1-4329-861e-5ccd0c8fe54f (1) (1) (1).mp4…
+
+
+https://github.com/user-attachments/assets/70681a14-b0bc-445b-a414-2c0f9f371c1d
+
 
 
