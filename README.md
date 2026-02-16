@@ -78,7 +78,6 @@ Neural-Quantum-Vehicle-Routing-Problem/
 ├── 📜 main.py                # FastAPI Backend Server (Entry Point)
 ├── 📜 model_def.py           # Quantum-GNN Class Definition
 └── 📜 requirements.txt       # Backend Dependencies
-└── 📜 demo_video.mp4       # Runthrough of the project
 ```
 ## Video Demo
 <video src="https://github.com/user-attachments/assets/70681a14-b0bc-445b-a414-2c0f9f371c1d" width="100%" controls>
