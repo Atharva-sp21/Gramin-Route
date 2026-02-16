@@ -81,6 +81,4 @@ Neural-Quantum-Vehicle-Routing-Problem/
 └── 📜 demo_video.mp4       # Runthrough of the project
 ```
 ## Video Demo
-<video src="demo_video.mp4" width="800" controls>
-  Your browser does not support the video tag.
-</video>
+<video src="demo_video.mp4" width="800" controls></video>
