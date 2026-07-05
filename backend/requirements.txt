@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+torch
+torch-geometric
+xgboost
+scikit-learn
+pandas
+numpy
+python-multipart
