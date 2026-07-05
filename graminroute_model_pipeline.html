@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+body { background: transparent; padding: 16px; }
+h2.sr-only { position: absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); }
+
+.pipeline { display: flex; flex-direction: column; gap: 6px; max-width: 780px; margin: 0 auto; }
+
+.stage {
+  border-radius: 10px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: box-shadow 0.15s;
+  border: 1.5px solid transparent;
+}
+.stage:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.1); }
+
+.stage-header { display: flex; align-items: center; gap: 10px; }
+.stage-num { font-size: 11px; font-weight: 800; width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.stage-title { font-size: 13px; font-weight: 700; }
+.stage-sub { font-size: 11px; opacity: 0.65; margin-top: 1px; }
+.stage-tag { margin-left: auto; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 4px; white-space: nowrap; }
+
+.features-grid { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.feat { font-size: 11px; padding: 4px 9px; border-radius: 5px; font-weight: 600; }
+
+.arrow-row { display: flex; align-items: center; justify-content: center; gap: 4px; color: #94a3b8; font-size: 12px; padding: 0 16px; }
+.arrow-line { flex: 1; height: 1.5px; background: #e2e8f0; }
+
+.output-box { margin-top: 10px; background: rgba(255,255,255,0.6); border-radius: 7px; padding: 8px 10px; font-size: 11px; font-family: monospace; color: #334155; line-height: 1.7; border: 1px solid rgba(0,0,0,0.06); }
+
+.detail { display: none; margin-top: 10px; padding: 10px 12px; background: rgba(255,255,255,0.7); border-radius: 8px; font-size: 11px; color: #475569; line-height: 1.7; border: 1px solid rgba(0,0,0,0.07); }
+.detail.open { display: block; }
+.detail strong { color: #1e293b; }
+
+/* Stage colors */
+.s1 { background: #f0f9ff; border-color: #bae6fd; }
+.s1 .stage-num { background: #0ea5e9; color: white; }
+.s1 .stage-tag { background: #bae6fd; color: #0c4a6e; }
+.s1 .feat { background: #e0f2fe; color: #0c4a6e; }
+
+.s2 { background: #fefce8; border-color: #fde047; }
+.s2 .stage-num { background: #eab308; color: white; }
+.s2 .stage-tag { background: #fef9c3; color: #713f12; }
+
+.s3 { background: #f0faf4; border-color: #86efac; }
+.s3 .stage-num { background: #22c55e; color: white; }
+.s3 .stage-tag { background: #dcfce7; color: #166534; }
+
+.s4 { background: #fdf4ff; border-color: #d8b4fe; }
+.s4 .stage-num { background: #a855f7; color: white; }
+.s4 .stage-tag { background: #f3e8ff; color: #6b21a8; }
+
+.s5 { background: #fff7ed; border-color: #fdba74; }
+.s5 .stage-num { background: #f97316; color: white; }
+.s5 .stage-tag { background: #ffedd5; color: #9a3412; }
+
+.s6 { background: #f8f8f8; border-color: #d1d5db; }
+.s6 .stage-num { background: #6b7280; color: white; }
+.s6 .stage-tag { background: #f3f4f6; color: #374151; }
+
+.out { background: #0f172a; border-radius: 10px; padding: 14px 18px; }
+.out-title { font-size: 10px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+.out-fields { display: flex; gap: 8px; flex-wrap: wrap; }
+.out-field { background: #1e293b; border-radius: 6px; padding: 7px 10px; font-size: 11px; }
+.out-key { color: #94a3b8; font-family: monospace; }
+.out-val { color: #34d399; font-family: monospace; font-weight: 700; }
+</style>
+</head>
+<body>
+<h2 class="sr-only">GraminRoute AI model pipeline showing 6 stages from raw data input to final output</h2>
+
+<div class="pipeline">
+
+  <!-- STAGE 1: RAW INPUT -->
+  <div class="stage s1" onclick="toggle('d1')">
+    <div class="stage-header">
+      <div class="stage-num">1</div>
+      <div>
+        <div class="stage-title">Raw Input — Shop Data</div>
+        <div class="stage-sub">What we know about the retailer right now</div>
+      </div>
+      <div class="stage-tag">7 base features</div>
+    </div>
+    <div class="features-grid">
+      <span class="feat">current_stock</span>
+      <span class="feat">daily_sales</span>
+      <span class="feat">lead_time_days</span>
+      <span class="feat">profit_margin</span>
+      <span class="feat">shelf_life</span>
+      <span class="feat">is_festival → days_to_festival</span>
+      <span class="feat">credit_score</span>
+    </div>
+    <div class="detail" id="d1">
+      <strong>What changes from current:</strong> <code>is_festival</code> (binary 0/1) is replaced with three richer features — <code>days_to_festival</code> (continuous, e.g. 8), <code>festival_spike_factor</code> (e.g. 2.8 for Diwali), and <code>product_festival_affinity</code> (does this product spike for this festival?). These feed from a hardcoded festival calendar mapping Indian festivals to affected products and historical demand multipliers.
+    </div>
+  </div>
+
+  <div class="arrow-row"><div class="arrow-line"></div>↓ normalize to [0,1]<div class="arrow-line"></div></div>
+
+  <!-- STAGE 2: XGBOOST RISK -->
+  <div class="stage s2" onclick="toggle('d2')">
+    <div class="stage-header">
+      <div class="stage-num">2</div>
+      <div>
+        <div class="stage-title">XGBoost — Individual Risk Score</div>
+        <div class="stage-sub">Looks at this shop in isolation, ignores neighbors</div>
+      </div>
+      <div class="stage-tag">replaces quantum VQC</div>
+    </div>
+    <div class="detail" id="d2">
+      <strong>What it does:</strong> Takes the 7 normalized features and predicts a raw risk score for <em>this shop alone</em>. Trained on the Indian retail dataset. Handles non-linear feature interactions (e.g. low stock + high sales + festival nearby = exponentially higher risk than any one factor alone).<br><br>
+      <strong>Why XGBoost over quantum:</strong> Same 7 features go in, similar output comes out — but XGBoost is interpretable (feature importance plot shows "festival_spike_factor is the #1 driver"), faster, and production-proven at Flipkart-scale.<br><br>
+      <strong>Output:</strong> <code>raw_risk_score = 0.74</code> — but this ignores what's happening in neighboring villages.
+    </div>
+  </div>
+
+  <div class="arrow-row"><div class="arrow-line"></div>↓ risk score becomes a node feature<div class="arrow-line"></div></div>
+
+  <!-- STAGE 3: GATv2 GNN -->
+  <div class="stage s3" onclick="toggle('d3')">
+    <div class="stage-header">
+      <div class="stage-num">3</div>
+      <div>
+        <div class="stage-title">GATv2 GNN — Spatial Awareness</div>
+        <div class="stage-sub">Looks at what's happening in neighboring villages</div>
+      </div>
+      <div class="stage-tag">kept, quantum removed</div>
+    </div>
+    <div class="detail" id="d3">
+      <strong>Graph structure:</strong> Every village/shop is a node. Road connections are edges. Edge features = road type (highway gets higher attention weight, dirt road gets lower).<br><br>
+      <strong>What it does:</strong> Takes the XGBoost risk scores for all nodes + road graph. The attention mechanism asks "which neighbors matter most for predicting this shop's demand?" If Village A (highway-connected, 2km away) is already spiking, GATv2 propagates that signal to Ramesh's shop — warning him before his own sales spike.<br><br>
+      <strong>Two GATv2 layers:</strong> Layer 1 aggregates immediate neighbors (4 attention heads). Layer 2 aggregates the aggregated neighborhood. Sigmoid output → final spatially-aware risk score.<br><br>
+      <strong>Output:</strong> <code>spatial_risk_score = 0.82</code> — higher than raw because neighboring villages are already running low.
+    </div>
+  </div>
+
+  <div class="arrow-row"><div class="arrow-line"></div>↓ risk score + stock + demand<div class="arrow-line"></div></div>
+
+  <!-- STAGE 4: FESTIVAL PREDICTOR -->
+  <div class="stage s4" onclick="toggle('d4')">
+    <div class="stage-header">
+      <div class="stage-num">4</div>
+      <div>
+        <div class="stage-title">Festival Demand Predictor</div>
+        <div class="stage-sub">Calculates days until stockout given upcoming festival</div>
+      </div>
+      <div class="stage-tag">new component</div>
+    </div>
+    <div class="detail" id="d4">
+      <strong>Inputs:</strong> spatial_risk_score + current_stock + daily_sales + festival_spike_factor + days_to_festival.<br><br>
+      <strong>What it calculates:</strong>
+      <code>predicted_daily_demand = daily_sales × spike_factor</code><br>
+      <code>days_until_stockout = current_stock ÷ predicted_daily_demand</code><br><br>
+      <strong>Example:</strong> Ramesh has 12 units of cooking oil. Normal daily sales = 3 units. Diwali spike factor = 2.8. Predicted demand = 8.4/day. Days until stockout = 12 ÷ 8.4 = <strong>1.4 days</strong>. Diwali is 8 days away. He needs to restock in the next 24 hours.<br><br>
+      <strong>Recommended order qty:</strong> <code>(days_to_festival × predicted_daily_demand) - current_stock + safety_buffer</code>
+    </div>
+  </div>
+
+  <div class="arrow-row"><div class="arrow-line"></div>↓ all signals combined<div class="arrow-line"></div></div>
+
+  <!-- STAGE 5: XGBOOST RECOMMENDER -->
+  <div class="stage s5" onclick="toggle('d5')">
+    <div class="stage-header">
+      <div class="stage-num">5</div>
+      <div>
+        <div class="stage-title">XGBoost Recommender — Distributor Ranking</div>
+        <div class="stage-sub">Which distributor to use and why</div>
+      </div>
+      <div class="stage-tag">replaces rule matrix</div>
+    </div>
+    <div class="detail" id="d5">
+      <strong>Inputs:</strong> spatial_risk_score + days_until_stockout + recommended_qty + days_to_festival + credit_score.<br><br>
+      <strong>Trained on:</strong> Synthetic labels generated from the existing rule-based scoring matrix. XGBoost learns the same logic but generalises to edge cases the rules don't cover.<br><br>
+      <strong>Output:</strong> Ranked list of distributors with confidence scores. High risk → FastTrack ranked #1 (speed), low risk → Budget Movers ranked #1 (cost).<br><br>
+      <strong>Feature importance reveals:</strong> days_until_stockout and spatial_risk_score are the top two drivers. credit_score matters more than profit_margin for distributor willingness to extend credit terms.
+    </div>
+  </div>
+
+  <div class="arrow-row"><div class="arrow-line"></div>↓ optimized delivery<div class="arrow-line"></div></div>
+
+  <!-- STAGE 6: ROUTING -->
+  <div class="stage s6" onclick="toggle('d6')">
+    <div class="stage-header">
+      <div class="stage-num">6</div>
+      <div>
+        <div class="stage-title">Routing Engine — OR-Tools VRP</div>
+        <div class="stage-sub">Optimal truck route across pooled orders</div>
+      </div>
+      <div class="stage-tag">new component</div>
+    </div>
+    <div class="detail" id="d6">
+      <strong>Inputs:</strong> Pool of shops needing delivery (from DBSCAN + Clarke-Wright) + PostGIS road distance matrix + urgency scores (from risk model).<br><br>
+      <strong>What it does:</strong> Solves the Vehicle Routing Problem — given N shops to deliver to, what's the optimal visit sequence for the truck? High-risk shops (days_until_stockout &lt; 2) are given tight time windows so OR-Tools prioritises them.<br><br>
+      <strong>Highway weighting:</strong> Distance matrix uses road-type-weighted costs. Highway edges cost less → OR-Tools routes through highways naturally, same as how Google Maps prefers them.<br><br>
+      <strong>Output:</strong> Ordered stop sequence — Hub → Shop C → Ramesh → Shop A → Shop D → Hub.
+    </div>
+  </div>
+
+  <!-- FINAL OUTPUT -->
+  <div style="margin-top: 8px;">
+    <div class="out">
+      <div class="out-title">Final API Response — what the frontend receives</div>
+      <div class="out-fields">
+        <div class="out-field">
+          <div class="out-key">risk_score</div>
+          <div class="out-val">0.82 "CRITICAL"</div>
+        </div>
+        <div class="out-field">
+          <div class="out-key">days_until_stockout</div>
+          <div class="out-val">1.4 days</div>
+        </div>
+        <div class="out-field">
+          <div class="out-key">festival_alert</div>
+          <div class="out-val">Diwali in 8 days</div>
+        </div>
+        <div class="out-field">
+          <div class="out-key">affected_products</div>
+          <div class="out-val">["Cooking Oil", "Sugar"]</div>
+        </div>
+        <div class="out-field">
+          <div class="out-key">recommended_qty</div>
+          <div class="out-val">60 units</div>
+        </div>
+        <div class="out-field">
+          <div class="out-key">restock_deadline</div>
+          <div class="out-val">Oct 28</div>
+        </div>
+        <div class="out-field">
+          <div class="out-key">top_distributor</div>
+          <div class="out-val">FastTrack (speed)</div>
+        </div>
+        <div class="out-field">
+          <div class="out-key">delivery_route</div>
+          <div class="out-val">Hub→C→R001→A→D→Hub</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function toggle(id) {
+  const el = document.getElementById(id);
+  el.classList.toggle('open');
+}
+</script>
+</body>
+</html>

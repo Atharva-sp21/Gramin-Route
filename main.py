@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import torch
@@ -6,27 +6,28 @@ import numpy as np
 import random
 from typing import List, Optional
 from math import radians, sin, cos, sqrt, atan2
+from sklearn.cluster import DBSCAN
 from torch_geometric.data import Data
 
-# Import the Quantum Model Architecture
-# Ensure backend/model_def.py exists with the class definition provided previously
-from model_def import HybridQuantumGNN 
+# --- New modular pipeline imports ---
+from model_def import SpatialGNN
+from risk_model import get_risk_model, build_features
+from festival_predictor import compute_stockout_forecast
+from recommender import get_recommender
 
-# ... imports ...
+app = FastAPI(title="GraminRoute API", version="2.0")
 
-app = FastAPI()
-
-# --- 0. CORS CONFIGURATION (FIXED) ---
+# ==========================================
+# 0. CORS
+# ==========================================
 origins = [
     "http://localhost:3000",
     "http://localhost:5173",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
     "https://gramin-route1-kpj2q6g19-vishals-projects-8bf76249.vercel.app",
-    "https://gramin-route1-r83apuouf-vishals-projects-8bf76249.vercel.app/"
+    "https://gramin-route1-r83apuouf-vishals-projects-8bf76249.vercel.app/",
 ]
-
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -35,304 +36,357 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ... rest of your code ...
-# --- 1. LOAD THE TRAINED QUANTUM BRAIN ---
-model = HybridQuantumGNN(in_dim=7)
-MODEL_PATH = "model/quantum_gnn_model.pth"
+# ==========================================
+# 1. LOAD MODELS (all three on startup)
+# ==========================================
 
+# 1a. XGBoost Risk Model (trains on synthetic data if no .pkl found)
+risk_model = get_risk_model()
+
+# 1b. SpatialGNN — GATv2 without quantum (in_dim=10: 9 features + XGB risk score)
+SPATIAL_GNN_PATH = "model/spatial_gnn.pth"
+spatial_gnn = SpatialGNN(in_dim=10, hidden_dim=64)
 try:
-    # Load weights onto CPU (since Render/Vercel usually don't have GPUs)
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device('cpu')))
-    model.eval()
-    print("✅ Quantum Brain Loaded & Ready for B2B Inference")
+    spatial_gnn.load_state_dict(
+        torch.load(SPATIAL_GNN_PATH, map_location="cpu")
+    )
+    spatial_gnn.eval()
+    print("✅ SpatialGNN loaded.")
 except Exception as e:
-    print(f"⚠️ CRITICAL: Model load failed ({e}). System running in Fallback Mode.")
-    model = None
+    print(f"⚠️  SpatialGNN weights not found ({e}). Running in untrained mode.")
+    spatial_gnn.eval()
 
-# --- 2. DATA MODELS ---
+# 1c. XGBoost Distributor Recommender
+recommender = get_recommender()
+
+print("✅ GraminRoute v2 — all models ready.")
+
+# ==========================================
+# 2. INPUT SCHEMAS
+# ==========================================
 
 class RetailerInput(BaseModel):
-    # UPDATE: Changed 'id' to 'shop_id' to match the frontend JSON
-    shop_id: str 
+    shop_id: str
     lat: float
     lon: float
     current_stock: int
-    daily_sales: int = 5         
-    lead_time_days: int = 3      
-    profit_margin: float = 20.0  
-    shelf_life: int = 30         
-    is_festival: bool = False
+    daily_sales: int = 5
+    lead_time_days: int = 3
+    profit_margin: float = 20.0
+    shelf_life: int = 30
     credit_score: int = 700
+    # Festival fields — auto-derived from calendar if not provided
+    product_name: str = "Rice (50kg)"   # Used to look up festival affinity
+
 
 class PendingOrder(BaseModel):
     shop_id: str
     lat: float
     lon: float
     qty_needed: int
-    retailer_id: Optional[str] = None # Handle diverse naming conventions
+    retailer_id: Optional[str] = None
     retailer_lat: Optional[float] = None
     retailer_lon: Optional[float] = None
 
-# --- 3. HELPER: NORMALIZATION (Crucial for AI Accuracy) ---
-def normalize_features(data: RetailerInput):
-    """
-    Matches the normalization logic from the Jupyter Notebook (Block 2).
-    Maps raw business data to the 0-1 range the Quantum Model expects.
-    """
-    f1 = data.current_stock / 200.0
-    f2 = data.daily_sales / 50.0
-    f3 = data.lead_time_days / 7.0
-    f4 = data.profit_margin / 60.0
-    f5 = data.shelf_life / 365.0
-    f6 = 1.0 if data.is_festival else 0.0
-    f7 = data.credit_score / 900.0
-    
-    # Create Tensor: Shape [1, 7]
-    return torch.tensor([[f1, f2, f3, f4, f5, f6, f7]], dtype=torch.float32)
 
-def get_risk_prediction(features):
+# ==========================================
+# 3. INFERENCE HELPERS
+# ==========================================
+
+def run_spatial_gnn(features_9: np.ndarray, xgb_risk: float) -> float:
     """
-    Runs the model. 
-    Since GNNs need a graph, we create a 'dummy' self-loop graph for single-node inference.
+    Appends the XGBoost risk score to the 9-feature vector,
+    creates a self-loop graph for single-node inference,
+    and runs SpatialGNN.
+
+    In production this would receive ALL village nodes at once
+    (a full district graph). For single-shop API calls we use
+    a self-loop as a minimal valid graph — the GATv2 attention
+    degenerates to a per-node transform, which is still useful
+    as a learned non-linear projection.
     """
-    if not model: return 0.5 # Fallback
-    
-    # Dummy Edge Index (Self-loop)
+    # Append XGB risk score → 10 features
+    features_10 = np.append(features_9, xgb_risk).astype(np.float32)
+    x = torch.tensor(features_10, dtype=torch.float32).unsqueeze(0)  # [1, 10]
+
+    # Minimal self-loop graph (single node inference)
     edge_index = torch.tensor([[0], [0]], dtype=torch.long)
-    # Dummy Edge Attr (Distance=1.0, RoadType=1.0)
-    edge_attr = torch.tensor([[1.0, 1.0, 1.0]], dtype=torch.float32) 
-    
-    # --- FIX: Bundle everything into a Data object ---
-    data = Data(x=features, edge_index=edge_index, edge_attr=edge_attr)
-    
+    edge_attr  = torch.tensor([[1.0]], dtype=torch.float32)  # highway weight
+
+    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+
     with torch.no_grad():
-        # Pass the single 'data' object instead of 3 separate arguments
-        output = model(data).item()
-        
-    return max(0.0, min(1.0, output))
+        output = spatial_gnn(data).item()
+
+    return float(np.clip(output, 0.0, 1.0))
+
+
+def shop_status(risk: float) -> str:
+    if risk > 0.7:  return "CRITICAL"
+    if risk > 0.4:  return "WARNING"
+    return "STABLE"
+
 
 # ==========================================
 # ENDPOINT 1: B2B DISTRIBUTOR RECOMMENDER
 # ==========================================
-# ==========================================
-# ENDPOINT 1: B2B DISTRIBUTOR RECOMMENDER
-# ==========================================
+
 @app.post("/recommend_distributor")
 def recommend_distributor(shop: RetailerInput):
     """
-    Input: Retailer Details.
-    Process: AI predicts 'Late Delivery Risk'.
-    Output: Best Distributor + Business Reason.
+    Full pipeline:
+        raw features
+          → XGBoost risk score (per-shop, ignores neighbors)
+          → SpatialGNN (adds road-network spatial context)
+          → Festival Predictor (days until stockout, recommended qty)
+          → XGBoost Recommender (ranked distributor list)
+
+    Returns enriched response vs. v1:
+        + days_until_stockout
+        + festival_alert  (festival name, days away, affected products)
+        + recommended_order_qty
+        + restock_deadline
+        + distributor confidence scores (vs. opaque match_score)
     """
-    # 1. Run AI Inference
-    features = normalize_features(shop)
-    risk_score = get_risk_prediction(features)
-    
-    # 2. Define Distributor Tier List
-    distributors = [
-        {"name": "FastTrack Logistics", "cost": 100, "speed": 4, "rel": 0.99, "type": "PREMIUM"},
-        {"name": "GraminRoute Hub",     "cost": 75,  "speed": 12, "rel": 0.95, "type": "BALANCED"},
-        {"name": "Budget Movers",       "cost": 60,  "speed": 24, "rel": 0.85, "type": "ECONOMY"}
-    ]
-    
-    recommendations = []
-    status = "STABLE"
-    
-    # 3. Decision Matrix
-    for dist in distributors:
-        score = 0
-        
-        # Scenario A: HIGH RISK (Risk > 70% OR Festival)
-        if risk_score > 0.7 or shop.is_festival:
-            status = "CRITICAL"
-            # Prioritize Speed & Reliability above all
-            score += (10 / dist["speed"]) * 50 
-            score += (dist["rel"] * 100)
-            reason = f"⚡ URGENT: High AI Risk Score ({int(risk_score*100)}%)"
-            
-        # Scenario B: MEDIUM RISK (Low Stock)
-        elif shop.current_stock < 20:
-            status = "WARNING"
-            score += (dist["rel"] * 80)
-            score += (100 / dist["cost"]) * 20
-            reason = "📉 LOW STOCK: Balanced Re-stock Needed"
-            
-        # Scenario C: LOW RISK (Routine)
-        else:
-            status = "STABLE"
-            # Prioritize Cost Savings
-            score += (100 / dist["cost"]) * 50
-            score += (dist["rel"] * 10)
-            reason = "💰 COST SAVING: Low Risk Environment"
-            
-        recommendations.append({
-            "distributor": dist["name"],
-            "match_score": round(score, 1),
-            "reason": reason,
-            "cost": dist["cost"],
-            "eta": f"{dist['speed']} Hours"
-        })
-        
-    # Sort by highest match
-    recommendations.sort(key=lambda x: x["match_score"], reverse=True)
-    
+    # Step 1: Build 9-feature vector + festival context
+    features_9, festival_ctx = build_features(
+        current_stock  = shop.current_stock,
+        daily_sales    = shop.daily_sales,
+        lead_time_days = shop.lead_time_days,
+        profit_margin  = shop.profit_margin,
+        shelf_life     = shop.shelf_life,
+        credit_score   = shop.credit_score,
+        product_name   = shop.product_name,
+    )
+
+    # Step 2: XGBoost — individual risk score (no graph)
+    xgb_risk = risk_model.predict_risk(features_9)
+
+    # Step 3: SpatialGNN — add road-network neighborhood context
+    spatial_risk = run_spatial_gnn(features_9, xgb_risk)
+
+    # Step 4: Festival predictor — stockout forecast
+    forecast = compute_stockout_forecast(
+        current_stock  = shop.current_stock,
+        daily_sales    = shop.daily_sales,
+        festival_ctx   = festival_ctx,
+        lead_time_days = shop.lead_time_days,
+    )
+
+    # Step 5: Recommender — rank distributors
+    ranked = recommender.rank(
+        spatial_risk_score  = spatial_risk,
+        days_until_stockout = forecast["days_until_stockout"],
+        days_to_festival    = forecast["days_to_festival"],
+        credit_score        = shop.credit_score,
+        recommended_qty     = forecast["recommended_order_qty"],
+    )
+
     return {
-        # UPDATE: Accessed via shop.shop_id instead of shop.id
-        "shop_id": shop.shop_id,
-        "ai_risk_score": round(risk_score, 2),
-        "shop_status": status,
-        "top_pick": recommendations[0],
-        "alternatives": recommendations[1:]
+        "shop_id":              shop.shop_id,
+        "xgb_risk_score":       round(xgb_risk, 2),
+        "spatial_risk_score":   round(spatial_risk, 2),
+        "shop_status":          shop_status(spatial_risk),
+
+        # Stockout forecast (new in v2)
+        "days_until_stockout":  forecast["days_until_stockout"],
+        "restock_urgency":      forecast["restock_urgency"],
+        "recommended_order_qty": forecast["recommended_order_qty"],
+        "restock_deadline":     forecast["restock_deadline"],
+
+        # Festival alert (new in v2)
+        "festival_alert": {
+            "festival_name":    festival_ctx["festival_name"],
+            "days_away":        festival_ctx["days_to_festival"],
+            "demand_multiplier": forecast["demand_multiplier"],
+            "affected_products": festival_ctx["affected_products"],
+            "in_prep_window":   festival_ctx["in_prep_window"],
+        },
+
+        # Distributor ranking (confidence scores instead of opaque match_score)
+        "top_pick":    ranked[0],
+        "alternatives": ranked[1:],
+
+        # XGBoost interpretability (new in v2)
+        "feature_importance": risk_model.feature_importance(),
     }
 
+
 # ==========================================
-# ENDPOINT 2: GEOSPATIAL POOLING ENGINE
+# ENDPOINT 2: GEOSPATIAL POOLING ENGINE (DBSCAN)
 # ==========================================
+
 @app.post("/pool_orders")
 def generate_pools(orders: List[PendingOrder]):
     """
-    Groups individual orders into pools based on 3KM radius.
-    """
-    pools = []
-    processed = set()
-    pool_counter = 1
+    Groups orders into delivery pools using DBSCAN (Haversine metric).
+    Replaces the manual greedy Haversine loop from v1.
 
-    # Normalize input data (Handle different naming conventions from frontend)
-    clean_orders = []
+    eps = 3km radius (converted to radians for sklearn Haversine).
+    Shops labelled -1 (noise) get individual delivery — correct
+    behaviour for isolated rural shops with no nearby orders.
+    """
+    if not orders:
+        return []
+
+    # Normalise lat/lon from both naming conventions
+    clean = []
     for o in orders:
-        clean_orders.append({
-            "id": o.shop_id,
+        clean.append({
+            "id":  o.shop_id or o.retailer_id,
             "qty": o.qty_needed,
             "lat": o.retailer_lat if o.retailer_lat else o.lat,
-            "lon": o.retailer_lon if o.retailer_lon else o.lon
+            "lon": o.retailer_lon if o.retailer_lon else o.lon,
         })
 
-    for i, order in enumerate(clean_orders):
-        if order["id"] in processed: continue
-        
-        # Start Pool
-        current_pool = {
-            "pool_id": f"POOL-{pool_counter:03d}",
-            "shops": [order["id"]],
-            "total_qty": order["qty"],
-            "center_lat": order["lat"],
-            "center_lon": order["lon"],
-            "radius_km": 0.0
-        }
-        processed.add(order["id"])
+    coords = np.radians([[c["lat"], c["lon"]] for c in clean])
 
-        # Find Neighbors
-        for j, neighbor in enumerate(clean_orders):
-            if neighbor["id"] in processed: continue
-            
-            # Haversine Distance
+    # DBSCAN with Haversine — eps in radians (3km / Earth radius)
+    db = DBSCAN(
+        eps=3.0 / 6371.0,
+        min_samples=1,
+        algorithm="ball_tree",
+        metric="haversine",
+    ).fit(coords)
+
+    labels = db.labels_
+    unique_labels = set(labels)
+
+    pools = []
+    for label in unique_labels:
+        indices = [i for i, l in enumerate(labels) if l == label]
+        pool_shops = [clean[i] for i in indices]
+
+        total_qty = sum(s["qty"] for s in pool_shops)
+        center_lat = np.mean([s["lat"] for s in pool_shops])
+        center_lon = np.mean([s["lon"] for s in pool_shops])
+
+        # Max radius within the pool
+        max_radius = 0.0
+        for s in pool_shops:
             R = 6371.0
-            dlat = radians(neighbor["lat"] - order["lat"])
-            dlon = radians(neighbor["lon"] - order["lon"])
-            a = sin(dlat/2)**2 + cos(radians(order["lat"])) * cos(radians(neighbor["lat"])) * sin(dlon/2)**2
-            c = 2 * atan2(sqrt(a), sqrt(1-a))
-            dist = R * c
-            
-            # 3KM Clustering Logic
-            if dist < 3.0: 
-                current_pool["shops"].append(neighbor["id"])
-                current_pool["total_qty"] += neighbor["qty"]
-                current_pool["radius_km"] = max(current_pool["radius_km"], dist)
-                processed.add(neighbor["id"])
-        
-        # Apply Discounts
-        if current_pool["total_qty"] > 50:
-            current_pool["discount"] = "15% WHOLESALE"
-        else:
-            current_pool["discount"] = "STANDARD"
-            
-        pools.append(current_pool)
-        pool_counter += 1
+            dlat = radians(s["lat"] - center_lat)
+            dlon = radians(s["lon"] - center_lon)
+            a = (sin(dlat/2)**2
+                 + cos(radians(center_lat)) * cos(radians(s["lat"])) * sin(dlon/2)**2)
+            max_radius = max(max_radius, R * 2 * atan2(sqrt(a), sqrt(1 - a)))
+
+        pools.append({
+            "pool_id":    f"POOL-{label + 1:03d}" if label >= 0 else f"SOLO-{indices[0]:03d}",
+            "shops":      [s["id"] for s in pool_shops],
+            "total_qty":  total_qty,
+            "center_lat": round(center_lat, 6),
+            "center_lon": round(center_lon, 6),
+            "radius_km":  round(max_radius, 3),
+            "discount":   "15% WHOLESALE" if total_qty > 50 else "STANDARD",
+            "is_solo":    label == -1,
+        })
 
     return pools
 
+
 # ==========================================
-# ENDPOINT 3: FINANCIAL SIMULATION (Using Model Inference)
+# ENDPOINT 3: FINANCIAL SIMULATION
 # ==========================================
+
 @app.get("/simulate_savings")
 def get_simulation():
     """
-    Runs a 60-day simulation where the AI decides re-stocking 
-    based on the Model's Risk Score vs Traditional Logic.
+    60-day simulation: Traditional (reactive) vs GraminRoute (predictive).
+    Uses XGBoost risk score instead of the old quantum model output.
     """
     days = 60
     history = []
-    
-    # State
+
     std_cash, std_stock = 50000.0, 50
-    ai_cash, ai_stock = 50000.0, 50
-    
-    # Costs
-    base_cost = 80.0
-    bulk_cost = 75.0
+    ai_cash,  ai_stock  = 50000.0, 50
+
+    base_cost    = 80.0
+    bulk_cost    = 75.0
     delivery_fee = 100.0
-    pooled_delivery = 25.0
-    margin = 20.0
+    pooled_fee   = 25.0
+    margin       = 20.0
 
     for day in range(1, days + 1):
-        # 1. Market Context
-        is_festival = (20 <= day <= 25)
-        daily_demand = random.randint(2, 8)
-        if is_festival: daily_demand += 10
-        
-        # --- TRADITIONAL (Reactive) ---
+        is_festival  = (20 <= day <= 25)
+        daily_demand = random.randint(2, 8) + (10 if is_festival else 0)
+
+        # --- Traditional (reactive) ---
         if std_stock < 20:
-            order_qty = 40
-            std_cash -= (order_qty * base_cost) + delivery_fee
-            std_stock += order_qty
+            qty = 40
+            std_cash  -= (qty * base_cost) + delivery_fee
+            std_stock += qty
 
-        # --- GRAMINROUTE AI (Predictive via Model) ---
-        target_stock = 15 
-        
-        if model:
-            # Create feature vector for TODAY'S state
-            # Notice we pass the dynamic 'ai_stock' and 'daily_demand' into the model
-            features = torch.tensor([[
-                ai_stock / 200.0,
-                daily_demand / 50.0,
-                3.0 / 7.0,   # Lead time constant
-                20.0 / 60.0, # Margin constant
-                0.08,        # Shelf life constant
-                1.0 if is_festival else 0.0,
-                0.78         # Good credit score
-            ]], dtype=torch.float32)
+        # --- GraminRoute (predictive via XGBoost) ---
+        features_9 = np.array([
+            ai_stock / 200.0,
+            daily_demand / 50.0,
+            3.0 / 7.0,
+            20.0 / 60.0,
+            0.08,
+            0.78,
+            0.17 if is_festival else 0.5,   # days_to_festival normalized
+            (2.8 if is_festival else 1.0) / 3.0,  # spike factor
+            1.0 if is_festival else 0.0,    # product affinity
+        ], dtype=np.float32)
 
-            risk_score = get_risk_prediction(features)
-            
-            # AI interprets Risk Score
-            if risk_score > 0.6: target_stock = 60 # Overstock
-            elif risk_score > 0.4: target_stock = 40
-            else: target_stock = 15
-        else:
-            target_stock = 50 if is_festival else 15
+        xgb_risk  = risk_model.predict_risk(features_9)
+        target    = 60 if xgb_risk > 0.6 else (40 if xgb_risk > 0.4 else 15)
 
-        # Execute AI Order
-        if ai_stock < target_stock:
-            needed = target_stock - ai_stock
-            is_pooled = (needed >= 40) or (random.random() > 0.3)
-            cost = (needed * bulk_cost) + pooled_delivery if is_pooled else (needed * base_cost) + delivery_fee
-            ai_cash -= cost
+        if ai_stock < target:
+            needed = target - ai_stock
+            pooled = (needed >= 40) or (random.random() > 0.3)
+            cost   = (needed * bulk_cost + pooled_fee) if pooled \
+                     else (needed * base_cost + delivery_fee)
+            ai_cash  -= cost
             ai_stock += needed
 
-        # --- SALES ---
-        std_sold = min(std_stock, daily_demand)
+        # --- Sales ---
+        std_sold  = min(std_stock, daily_demand)
         std_stock -= std_sold
-        std_cash += std_sold * (base_cost + margin)
-        
-        ai_sold = min(ai_stock, daily_demand)
+        std_cash  += std_sold * (base_cost + margin)
+
+        ai_sold  = min(ai_stock, daily_demand)
         ai_stock -= ai_sold
-        ai_cash += ai_sold * (base_cost + margin)
-        
+        ai_cash  += ai_sold * (base_cost + margin)
+
         history.append({
-            "day": f"Day {day}",
-            "Traditional": round(std_cash + (std_stock * base_cost)),
-            "GraminRoute": round(ai_cash + (ai_stock * base_cost)),
-            "isFestival": is_festival
+            "day":         f"Day {day}",
+            "Traditional": round(std_cash + std_stock * base_cost),
+            "GraminRoute": round(ai_cash  + ai_stock  * base_cost),
+            "isFestival":  is_festival,
         })
-        
+
     return history
+
+
+# ==========================================
+# ENDPOINT 4: MODEL INTERPRETABILITY (new in v2)
+# ==========================================
+
+@app.get("/model_info")
+def model_info():
+    """
+    Returns XGBoost feature importances for both models.
+    Useful for demo / interview — shows which features
+    drive risk and distributor selection.
+    """
+    return {
+        "risk_model": {
+            "type": "XGBoost Classifier",
+            "features": risk_model.feature_importance(),
+            "description": "Predicts stockout risk per shop, ignoring spatial context.",
+        },
+        "spatial_gnn": {
+            "type": "GATv2 Graph Attention Network",
+            "layers": "2 GATv2Conv (4 heads, 1 head)",
+            "in_dim": 10,
+            "hidden_dim": 64,
+            "description": "Propagates risk signals through the village road network.",
+        },
+        "recommender": {
+            "type": "XGBoost Multi-class Classifier (Contextual Bandit framing)",
+            "classes": ["FastTrack Logistics", "GraminRoute Hub", "Budget Movers"],
+            "description": "Ranks distributors by context-conditioned confidence score.",
+        },
+    }
