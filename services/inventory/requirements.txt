@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+asyncpg
+aiokafka
+xgboost
+scikit-learn
+numpy
+pydantic
