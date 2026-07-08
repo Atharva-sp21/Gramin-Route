@@ -1,0 +1,179 @@
+version: "3.9"
+
+# =============================================
+# GraminRoute — Full Microservices Stack
+# =============================================
+# Infrastructure: PostgreSQL+PostGIS, Redis, Kafka
+# Services: Gateway, Inventory, WebSocket, Pool, Route, Notify, ML
+# Frontend: Hub Dashboard, Shopkeeper App
+# =============================================
+
+services:
+  # ── Infrastructure ────────────────────────────
+  postgres:
+    image: postgis/postgis:15-3.3
+    environment:
+      POSTGRES_DB: graminroute
+      POSTGRES_USER: gramin
+      POSTGRES_PASSWORD: gramin
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./services/db/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U gramin -d graminroute" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: [ "CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list" ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  seed:
+    build:
+      context: .
+      dockerfile: services/db/Dockerfile.seed
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gramin:gramin@postgres:5432/graminroute
+    restart: "no"
+
+  # ── Backend Services ──────────────────────────
+  gateway:
+    build: ./services/gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gramin:gramin@postgres:5432/graminroute
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: graminroute_dev_secret_change_in_prod
+      INVENTORY_SERVICE_URL: http://inventory:8001
+      WEBSOCKET_SERVICE_URL: http://websocket:8002
+      POOL_SERVICE_URL: http://pool:8003
+
+  inventory:
+    build:
+      context: .
+      dockerfile: services/inventory/Dockerfile
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gramin:gramin@postgres:5432/graminroute
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+  websocket:
+    build: ./services/websocket
+    ports:
+      - "8002:8002"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+
+  pool:
+    build: ./services/pool_formation
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gramin:gramin@postgres:5432/graminroute
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      WEBSOCKET_SERVICE_URL: http://websocket:8002
+
+  route:
+    build: ./services/route_optimizer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gramin:gramin@postgres:5432/graminroute
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      WEBSOCKET_SERVICE_URL: http://websocket:8002
+
+  notify:
+    build: ./services/notify
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gramin:gramin@postgres:5432/graminroute
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      WEBSOCKET_SERVICE_URL: http://websocket:8002
+
+  ml:
+    build:
+      context: .
+      dockerfile: services/ml/Dockerfile
+    ports:
+      - "8004:8004"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://gramin:gramin@postgres:5432/graminroute
+      REDIS_URL: redis://redis:6379
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+
+volumes:
+  pgdata:

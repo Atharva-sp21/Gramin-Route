@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+asyncpg
+aiokafka
+redis[asyncio]
+numpy
+xgboost
+torch
+torch-geometric
+pydantic

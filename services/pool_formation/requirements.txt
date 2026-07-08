@@ -1,0 +1,4 @@
+asyncpg
+aiokafka
+redis[asyncio]
+httpx
