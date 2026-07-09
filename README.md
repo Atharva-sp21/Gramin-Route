@@ -353,7 +353,7 @@ The notebook covers:
 | Role | Contribution |
 |------|-------------|
 | **Atharva** | ML pipeline (XGBoost + GATv2 GNN), FastAPI backend, training notebook |
-| **Partner** | Microservices architecture, Kafka/Redis/PostgreSQL infra, Docker orchestration |
+| **Vishal** | Microservices architecture, Kafka/Redis/PostgreSQL infra, Docker orchestration |
 
 ---
 
